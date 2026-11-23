@@ -1,0 +1,84 @@
+{
+  "name": "defuss-scheduler",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "author": "Aron Homberg",
+  "description": "Isomorphic, durable cron schedules and pull-based worker leases for Node.js, Bun and the browser.",
+  "keywords": [
+    "cron",
+    "scheduler",
+    "job-queue",
+    "worker",
+    "lease",
+    "fencing",
+    "durable",
+    "isomorphic",
+    "browser",
+    "opfs"
+  ],
+  "homepage": "https://github.com/kyr0/defuss-scheduler#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kyr0/defuss-scheduler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kyr0/defuss-scheduler/issues"
+  },
+  "packageManager": "bun@1.4.5",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=26",
+    "bun": ">=1.4.5"
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "import": "./dist/http.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "ARCH.md",
+    "docs",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pkgroll --clean-dist --license=dist/THIRD-PARTY-LICENSES.txt",
+    "lint": "oxlint --deny-warnings src tests scripts examples && tsc --noEmit && tsc -p tsconfig.browser.json",
+    "test": "bun test tests",
+    "prepublishOnly": "make verify"
+  },
+  "dependencies": {
+    "@lickle/lock": "0.0.1",
+    "croner": "11.0.0",
+    "defuss-brotli": "0.3.0",
+    "defuss-dataview": "0.10.0",
+    "defuss-dbsonl": "0.9.0",
+    "defuss-dson": "1.5.1",
+    "defuss-lexicalsearch": "0.4.0",
+    "defuss-storage": "0.4.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.10",
+    "@types/node": "26.6.6",
+    "defuss-db": "3.2.0",
+    "oxlint": "^1.0.0",
+    "pkgroll": "^2.0.0",
+    "playwright-core": "1.65.1",
+    "typescript": "5.9.3"
+  }
+}

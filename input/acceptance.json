@@ -1,0 +1,1 @@
+{"scope":{"app":"project","tenant":"cross-runtime","bucket":"maintenance"},"schedule":{"id":"rollup","ref":"maintenance","cron":"* * * * * *","handler":"rollup","payload":{"partition":1},"retry":{"maxAttempts":3,"baseMs":0}}}
