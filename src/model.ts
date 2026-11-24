@@ -78,6 +78,12 @@ export function enqueue(tx: Records, run: StoredRun) {
     capabilities,
     payloadBytes,
   } satisfies ReadyEntry);
+  tx.put(keys.byHandler(run), run.scope);
+}
+/** Removes a run's two ready entries, the scope's queue entry and the authority-wide one by handler. */
+export function dequeue(tx: Records, run: StoredRun) {
+  tx.del(keys.ready(run));
+  tx.del(keys.byHandler(run));
 }
 export interface Pointer {
   scope: string;
@@ -93,6 +99,14 @@ export const keys = {
     run.scope +
     "/" +
     timeKey(run.public.availableAt) +
+    "/" +
+    run.public.id,
+  /** Ready runs of every scope by handler and availability, so `Scheduler.ready` finds the scopes with work. */
+  byHandler: (run: StoredRun) =>
+    handlerPrefix(run.public.handler) +
+    timeKey(run.public.availableAt) +
+    "/" +
+    run.scope +
     "/" +
     run.public.id,
   expiry: (at: number, s: string, rid: string) =>
@@ -116,6 +130,7 @@ export const runRefKey = (run: StoredRun) =>
   timeKey(run.public.scheduledAt) +
   "/" +
   run.public.id;
+export const handlerPrefix = (handler: string) => "h/" + encode(handler) + "/";
 export function scopeKey(scope: Scope): string {
   object(scope, ["app", "tenant", "bucket"]);
   return encode([id(scope.app), id(scope.tenant), id(scope.bucket)]);

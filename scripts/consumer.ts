@@ -32,6 +32,8 @@ if (mode === "host" || mode === "reopen") {
       requestId: "pause",
     });
     assert.equal((await q.listRuns()).items.length, 1);
+    // The unclaimed run makes its scope ready for a worker that serves every scope.
+    assert.deepEqual(await owner.ready({ handlers: [fixture.schedule.handler] }), [fixture.scope]);
   }
   const handle = createWorkerEndpoint((req) =>
     req.headers.get("authorization") === "Bearer integration"

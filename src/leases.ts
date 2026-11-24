@@ -5,6 +5,7 @@ import {
   exposed,
   keys,
   enqueue,
+  dequeue,
   openKey,
   runRefKey,
   type ReadyEntry,
@@ -166,7 +167,7 @@ export async function terminateRun(
 ) {
   const item = run.public;
   if (run.lease) await release(tx, run);
-  else tx.del(keys.ready(run));
+  else dequeue(tx, run);
   item.state = "terminated";
   item.terminationCause = cause;
   item.finishedAt = wall;
@@ -338,9 +339,10 @@ export async function claim(
       const now = ledger.leaseNow(),
         expiresAt = now + policy.leaseMs;
       run.lease = { workerId, sessionId, slot, runId: item.id, token, fence };
+      // The run's availability still keys both ready entries: the index check above compared them.
+      dequeue(tx, run);
       item.state = "leased";
       item.attempt++;
-      tx.del(row.key);
       tx.put(key, run);
       tx.put(run.group, { runId: item.id, token, fence, expiresAt });
       tx.put(keys.expiry(expiresAt, ns, item.id), { scope: ns, id: item.id });

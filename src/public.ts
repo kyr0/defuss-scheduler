@@ -2,4 +2,4 @@
 export * from "./types.js";
 export { nextOccurrence } from "./calendar.js";
 export { startWorker, defineHandler, PermanentFailure } from "./worker.js";
-export type { Scheduler, SchedulerOptions } from "./scheduler.js";
+export type { ReadyOptions, Scheduler, SchedulerOptions } from "./scheduler.js";

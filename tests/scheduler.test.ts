@@ -577,6 +577,7 @@ test("a slot record and a parallel run's group last one retention period, a held
       // What stays is per schedule and per scope: no group, slot, receipt or index entry of a finished run.
       expect(rows.map((id) => id.split("/")[0])).toEqual([
         "!leaseTime",
+        "!readyByHandler",
         "!version",
         "c",
         "n",
@@ -888,6 +889,66 @@ test("a hard stop aborts the handler of a leased run at its next heartbeat", asy
     });
   } finally {
     await worker?.stop();
+    await f.close();
+  }
+});
+
+test("ready names every scope that holds a run a claim would grant now, by handler", async () => {
+  const f = await fixture();
+  try {
+    const mail = { app: "studio", tenant: "b", bucket: "cron" };
+    const yearly = { app: "studio", tenant: "c", bucket: "cron" };
+    await f.q.create(base);
+    await f.owner.scope(mail).create({ ...base, handler: "mail" });
+    await f.owner.scope(yearly).create({ ...base, cron: "0 0 1 1 *" });
+    expect(await f.owner.ready({ handlers: ["build", "mail"] })).toEqual([]);
+    f.advance(1000);
+    await f.owner.tick();
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([scope]);
+    expect(await f.owner.ready({ handlers: ["build", "mail"], limit: 1 })).toHaveLength(1);
+    expect(new Set((await f.owner.ready({ handlers: ["build", "mail"] })).map((s) => s.tenant))).toEqual(
+      new Set([scope.tenant, mail.tenant]),
+    );
+    // A leased run leaves the index; a failed attempt returns once its retry delay has passed.
+    const leased = grant(await f.q.claim(claim()));
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([]);
+    await f.q.fail({ lease: leased.lease, requestId: "f1", error: "boom" });
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([]);
+    f.advance(500);
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([scope]);
+    // A hard stop takes the scope's ready runs out of the index.
+    await f.owner.scope(mail).terminate({ all: true }, { cause: "test" });
+    expect(await f.owner.ready({ handlers: ["mail"] })).toEqual([]);
+    await expect(f.owner.ready({ handlers: [] })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    await expect(f.owner.ready({ handlers: ["build"], limit: 0 })).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("opening a 0.1.0 store indexes its ready runs by handler", async () => {
+  const f = await fixture();
+  try {
+    await f.q.create(base);
+    f.advance(1000);
+    await f.owner.tick();
+    await f.owner.close();
+    // Remove what 0.1.0 did not write: the entries by handler and the migration marker.
+    const db = await openDatabase(await createFileBackend(f.directory), { name: "defuss_scheduler", create: false });
+    try {
+      const ledger = db.collection("ledger");
+      const { rows } = await ledger.pageIdsByIndex("key", { limit: 1000 });
+      const added = rows.filter((id) => String(id).startsWith("h/") || id === "!readyByHandler");
+      expect(added.length).toBe(2);
+      for (const id of added) await ledger.delete(id);
+    } finally {
+      await db.close();
+    }
+    await f.restart();
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([scope]);
+    grant(await f.q.claim(claim()));
+    expect(await f.owner.ready({ handlers: ["build"] })).toEqual([]);
+  } finally {
     await f.close();
   }
 });

@@ -21,7 +21,7 @@ import {
   type Request,
 } from "playwright-core";
 const dir = await mkdtemp(join(tmpdir(), "defuss-scheduler-consumer-"));
-const archive = await realpath("output/defuss-scheduler-0.1.0.tgz");
+const archive = await realpath("output/defuss-scheduler-0.2.0.tgz");
 const children = new Set<ReturnType<typeof spawn>>();
 function run(runtime: string, mode: string, root: string, url = "") {
   const child = spawn(runtime, ["consumer.ts", mode, root, url], {

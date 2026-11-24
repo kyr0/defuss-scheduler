@@ -41,3 +41,7 @@ Wrap: EVERY lead becomes a test | .vae/VERIFY.py rule | one MEMORY line with BC,
 2026-11-23T20:45:37Z s=433bf258 DONE fp=5e1bc9a75e39 cov=94.8% paths=.github/workflows/verify.yml,AGENTS.md,ARCH.md,Makefile(+30)
 2026-11-23T20:45:37Z s=433bf258 FINDING src/scheduler.ts:arm|maintain learn=test: tests/scheduler.test.ts: a retention backlog is collected without a tick of waiting per page.
 2026-11-23T20:45:37Z s=433bf258 FINDING README.md:226 P|docs/API.md:10 P learn=none: Documentation wording that follows the behavior change; the store test asserts the behavior.
+2026-11-24T20:45:45Z s=dcdb118f DONE fp=aee76efc16e6 cov=98.1% paths=ARCH.md,README.md,docs/API.md,docs/WORKERS.md(+8)
+2026-11-24T20:45:45Z s=dcdb118f FINDING src/model.ts enqueue/dequeue, src/leases.ts claim and terminateRun learn=test: VERIFIED: the ready test and the retained-keys assertion fail if an entry leaks or is missing.
+2026-11-24T20:45:45Z s=dcdb118f FINDING src/scheduler.ts indexReadyRuns learn=test: VERIFIED: tests/scheduler.test.ts covers the migration.
+2026-11-24T20:45:45Z s=dcdb118f FINDING src/scheduler.ts ready READY_PAGE learn=none: VERIFIED: a fairer index (one entry per scope and handler) would need a counter per scope; no measurement shows the bound matters yet.

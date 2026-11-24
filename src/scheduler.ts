@@ -2,10 +2,12 @@
 import { openLedger, type Mounter } from "./store.js";
 import {
   exposed,
+  handlerPrefix,
   scopeKey,
   keys,
   listPage,
   loadSchedule,
+  type ReadyEntry,
   type StoredRun,
   type Pointer,
   type Policy,
@@ -23,7 +25,19 @@ import {
   type ScheduleRecord,
   SchedulerError,
 } from "./types.js";
-import { id, integer, json, object, timeKey } from "./validation.js";
+import {
+  decode,
+  id,
+  integer,
+  invalid,
+  json,
+  names,
+  object,
+  timeKey,
+} from "./validation.js";
+
+/** Rows one ready query or one pass of the 0.1.0 index migration reads. */
+const READY_PAGE = 512;
 
 function historyLimit(options: HistoryOptions): number {
   object(options, ["limit"]);
@@ -44,8 +58,19 @@ export interface SchedulerOptions {
   onError?: (error: unknown) => void;
   onTransaction?: (metric: TransactionMetric) => void;
 }
+/** What `Scheduler.ready` looks for. */
+export interface ReadyOptions {
+  handlers: string[];
+  /** Most scopes returned, 1 to 128, default 32. */
+  limit?: number;
+}
 export interface Scheduler {
   scope(scope: Scope): Queue;
+  /**
+   * The scopes that hold a run of one of these handlers that a claim would grant now, earliest first. A worker
+   * that serves every scope polls this and claims only in the scopes it names, so idle scopes cost no claims.
+   */
+  ready(options: ReadyOptions): Promise<Scope[]>;
   tick(): Promise<void>;
   compact(): Promise<void>;
   close(): Promise<void>;
@@ -72,6 +97,27 @@ export async function start(
     options.clock,
     options.onTransaction,
   );
+  /**
+   * A 0.1.0 store has ready runs without the authority-wide entries by handler. Writing them again is harmless,
+   * so a crash before the marker repeats the pass. Ready entries are keyed `q/<scope>/<time>/<run>`.
+   */
+  async function indexReadyRuns() {
+    let after: string | undefined;
+    for (;;) {
+      const done = await ledger.write(async (tx) => {
+        if (await tx.get("!readyByHandler")) return true;
+        const rows = await tx.rows<ReadyEntry>("q/", READY_PAGE, after);
+        for (const row of rows) {
+          const [, scope, time, run] = row.key.split("/");
+          tx.put(handlerPrefix(row.value.handler) + time + "/" + scope + "/" + run, scope);
+        }
+        after = rows.at(-1)?.key;
+        if (rows.length < READY_PAGE) tx.put("!readyByHandler", true);
+        return rows.length < READY_PAGE;
+      });
+      if (done) return;
+    }
+  }
   let dueCursor: string | undefined,
     timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false,
@@ -155,6 +201,7 @@ export async function start(
     (timer as { unref?: () => void }).unref?.();
   }
   try {
+    await indexReadyRuns();
     await tick();
     arm();
   } catch (error) {
@@ -169,6 +216,32 @@ export async function start(
   };
   return {
     tick,
+    async ready(input) {
+      const opts = capture(input);
+      object(opts, ["handlers", "limit"]);
+      const handlers = names(opts.handlers);
+      if (!handlers.length) invalid("At least one handler is required");
+      const limit = integer(opts.limit ?? 32, 1, 128);
+      return ledger.write(async (tx) => {
+        const now = ledger.wallNow();
+        const earliest = new Map<string, string>();
+        for (const handler of handlers) {
+          const prefix = handlerPrefix(handler);
+          // A scope with many ready runs can fill this page and hide later scopes until its worker drains them.
+          for (const row of await tx.rows<string>(prefix, READY_PAGE, undefined, prefix + timeKey(now) + "/\uffff")) {
+            const time = row.key.slice(prefix.length, prefix.length + 16);
+            if (!earliest.has(row.value) || time < earliest.get(row.value)!) earliest.set(row.value, time);
+          }
+        }
+        return [...earliest]
+          .sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+          .slice(0, limit)
+          .map(([scope]) => {
+            const [app, tenant, bucket] = decode(scope) as string[];
+            return { app, tenant, bucket };
+          });
+      });
+    },
     compact: ledger.compact,
     close() {
       closed = true;

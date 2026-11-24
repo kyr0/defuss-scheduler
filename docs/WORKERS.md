@@ -32,7 +32,7 @@ A page runs handlers in two ways. With an authority in the same page, pass its s
 
 ## Backplane
 
-The defuss-backplane source adds a scheduler to its daemon. This integration is unreleased as of defuss-backplane 0.2.0. Set BACKPLANE_SCHEDULER=1 and start the daemon normally. With scheduling enabled, it also serves twelve scheduler management and observation tools over MCP, including the schedule and run histories and the hard stop. Workers use typed RPC.
+The defuss-backplane daemon opens one authority for every app, tenant and bucket under its data root. It serves twelve scheduler management and observation tools over MCP, including the schedule and run histories and the hard stop, and the whole queue over typed RPC. A schedule whose handler is `_rpc` needs no worker: the daemon asks `ready` for that handler and calls the defuss-rpc function that the schedule's payload names. Runs of other handlers go to workers such as this one.
 
 ```ts
 import { connectBackplane } from "defuss-backplane/client";

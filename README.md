@@ -215,6 +215,8 @@ process.once("SIGTERM", () => worker.stop());
 
 A thrown error fails the attempt, and the run is retried within its retry budget. Throwing `PermanentFailure` ends the run as `dead` at once. `defineHandler` validates the payload first, and a rejected payload counts as a permanent failure. The worker renews its lease while a handler runs. When the lease is lost or the run is terminated, the context's signal aborts. A slot without work waits `pollMs`, plus up to a quarter of it as jitter, before it asks again. An empty answer writes nothing to the store. `stop` ends claiming and waits up to `drainMs`, 15 seconds by default, for handlers in flight.
 
+A worker that serves every scope, such as a daemon that runs one handler for all of its tenants, asks the authority `ready({ handlers })` for the scopes that hold a run of those handlers that is available now, and claims only there. An idle scope then costs no claims. `ready` writes nothing to the store.
+
 Workers on other machines reach the authority through one HTTP route that the application mounts behind its own authentication. [Remote worker and backplane integration](docs/WORKERS.md)
 
 ## Authority options

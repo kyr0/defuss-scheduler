@@ -18,7 +18,7 @@ All methods on a scoped queue return promises. Public data uses JSON values. A p
 | onTransaction | optional | Callback with queueMs, transactionMs and DBSONL conflict retries per successful transaction. Keep the callback short. |
 | onError | console.error | Receives background maintenance faults. Explicit tick calls reject on failure. |
 
-Call scope with the three name components. tick performs one bounded maintenance turn. Concurrent ticks share that turn. The database compacts its log by itself. compact rewrites live records and collects old generations at once, while the authority serializes its commands. close drains work already admitted and releases the store's lock.
+Call scope with the three name components. ready takes handlers and an optional limit of 1 to 128 (default 32) and returns the scopes that hold a run of one of those handlers that a claim would grant now, earliest first. It reads at most 512 index entries per handler and writes nothing. tick performs one bounded maintenance turn. Concurrent ticks share that turn. The database compacts its log by itself. compact rewrites live records and collects old generations at once, while the authority serializes its commands. close drains work already admitted and releases the store's lock.
 
 ## Calendar
 
