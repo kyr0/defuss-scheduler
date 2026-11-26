@@ -119,13 +119,8 @@ if (mode === "host" || mode === "reopen") {
   // A one-off job runs as a defuss-multicore task in a worker thread; its endings admit follow-ups a handler sees.
   const owner = await openScheduler({ directory: dir, leaseMs: 1500, tickMs: 10, pollMs: 10 });
   const q = owner.scope(fixture.scope);
-  // VERIFIED by probe: under Bun 1.4.5 the pool never answers through node:worker_threads, but does through Bun's
-  // global Worker; Node.js has no global Worker.
-  const url = new URL("./pool-worker.mjs", import.meta.url);
-  const pool = createPool({
-    worker: () => (typeof Worker === "function" ? new Worker(url, { type: "module" }) : new ThreadWorker(url)),
-    maxWorkers: 2,
-  });
+  // node:worker_threads under both runtimes: defuss-multicore 0.1.1 answers through it under Bun too, 0.1.0 did not.
+  const pool = createPool({ worker: () => new ThreadWorker(new URL("./pool-worker.mjs", import.meta.url)), maxWorkers: 2 });
   const causes: string[] = [];
   const worker = startWorker(q, {
     workerId: "jobs",

@@ -7,18 +7,19 @@ A worker needs a WorkerPort and an allowlist of handler implementations. It can 
 A handler that computes for long blocks the event loop that renews its lease. `poolHandlers` hands such work to a pool of worker threads instead. Set the worker's concurrency to the pool's size, so no claimed run waits in the pool's queue while its lease runs.
 
 ```ts
+import { Worker } from "node:worker_threads";
 import { createPool } from "defuss-multicore";
 import { poolHandlers, startWorker } from "defuss-scheduler/worker";
 import type { tasks } from "./render-tasks.js";
 
 const pool = createPool<typeof tasks>({
-  worker: () => new Worker(new URL("./render-tasks.js", import.meta.url), { type: "module" }),
+  worker: () => new Worker(new URL("./render-tasks.js", import.meta.url)),
   maxWorkers: 4,
 });
 const worker = startWorker(queue, { workerId: "render-1", concurrency: 4, handlers: poolHandlers(pool, ["render"]) });
 ```
 
-Under Bun, build the pool on Bun's global `Worker`, as above. VERIFIED by probe on 2026-11-26: with defuss-multicore 0.1.0 and Bun 1.4.5, a pool built on the `Worker` of `node:worker_threads` never answers a task. Node.js has no global `Worker`, so there the pool takes the one from `node:worker_threads`.
+Under Bun, use defuss-multicore 0.1.1 or later. VERIFIED by probe on 2026-11-26: with defuss-multicore 0.1.0 and Bun 1.4.5, a pool built on the `Worker` of `node:worker_threads` never answered a task. In a browser, pass the page's `Worker` instead.
 
 Each task gets the run's payload, and its return value becomes the run's result. A thrown error fails the attempt, so the job is retried within its budget. When the lease is lost, the job terminated or its deadline passed, the signal cancels the task, and defuss-multicore terminates that thread. VERIFIED by tests/jobs.test.ts under Bun, and by the packed consumer under Node.js and Bun.
 

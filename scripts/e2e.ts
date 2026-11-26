@@ -180,7 +180,7 @@ try {
     '{"name":"scheduler-consumer","private":true,"type":"module"}',
   );
   // defuss-multicore is the consumer's own choice of pool, as poolHandlers expects.
-  execFileSync("bun", ["add", archive, "defuss-multicore@0.1.0"], {
+  execFileSync("bun", ["add", archive, "defuss-multicore@0.1.1"], {
     cwd: dir,
     stdio: "pipe",
     timeout: 90000,

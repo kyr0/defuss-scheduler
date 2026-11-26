@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+The worker-thread docs and the packed consumer use defuss-multicore 0.1.1, whose pools answer through `node:worker_threads` under Bun too.
+
 ## 0.3.0
 
 Added one-off jobs: `Queue.submit(job)` and `Queue.getJob(id)`. A job is a run without a cron. It can have a deadline (`timeoutMs`), after which it ends as `timedOut`, and a follow-up job for each ending in `on`. The follow-up enters the queue in the transaction that ends the job and carries `cause: { job, run, state }`. `terminate({ job })` stops one job, and `terminate({ ref })` reaches jobs too.
