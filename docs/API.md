@@ -39,10 +39,14 @@ Use five fields for minute, hour, day of month, month and day of week. A sixth f
 | update(id, patch, change) | Change cron, timezone, handler, payload, capabilities, retry or misfire configuration. ref, concurrencyKey and parallel are fixed at creation. Each admitted occurrence retains its original inputs. |
 | pause(id, change), resume(id, change) | Stop calendar production or resume strictly after the resume cutoff. Previously admitted work remains eligible. |
 | remove(id, change) | Stop future work and reserve the schedule ID permanently. Admitted runs retain their lifecycle. |
+| submit(job, options?) | Admit a one-off job under an ID unused while its record exists. An optional object with requestId allows exact replay. Returns the job's run. |
+| getJob(id) | Read a job's run by the job's ID. A missing or collected job returns null. |
 | getRun(runId), listRuns(page?) | Read public occurrence state, including attempt, error, result and schedule revision. Lease tokens are private. |
 | scheduleHistory(id, options?) | List every definition and state the schedule had, newest first. The values omit nextDue, lastProcessed and lastSkipped. |
 | runHistory(runId, options?) | List every status the run had, newest first. The list is empty once retention removed the run. |
-| terminate(target, { cause }) | Stop at once, without the drain an edit waits for. The target is one of `{ run }`, `{ schedule }`, `{ ref }` or `{ all: true }`. Returns the counts of terminated schedules and runs. |
+| terminate(target, { cause }) | Stop at once, without the drain an edit waits for. The target is one of `{ run }`, `{ job }`, `{ schedule }`, `{ ref }` or `{ all: true }`; only `{ run }` ends a follow-up. Returns the counts of terminated schedules and runs. |
+
+A run of a schedule has scheduleId and scheduleRevision, with jobId null. A job's run has jobId, with scheduleId and scheduleRevision null; its deadline is the epoch milliseconds at which it ends as timedOut, null without timeoutMs, and on holds its normalized follow-ups. A follow-up has all three IDs null and cause set to the job, run and ending that admitted it. Runs a 0.2.0 store wrote read with jobId, deadline, on and cause null.
 
 Schedules and runs carry createdAt and updatedAt as epoch milliseconds. createdAt is the first write. updatedAt is the last change of a schedule's definition or state, or a run's last status change. A history entry holds from, until and value. until is null for the latest entry. value is null only for a removed run whose history is not erased yet. Both history methods accept limit, from 1 through 500 with a default of 50. A lease renewal and a move of the calendar cursor add no entry.
 

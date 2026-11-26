@@ -21,7 +21,8 @@ import {
   type Request,
 } from "playwright-core";
 const dir = await mkdtemp(join(tmpdir(), "defuss-scheduler-consumer-"));
-const archive = await realpath("output/defuss-scheduler-0.2.0.tgz");
+const { version: packageVersion } = JSON.parse(await readFile("package.json", "utf8")) as { version: string };
+const archive = await realpath(`output/defuss-scheduler-${packageVersion}.tgz`);
 const children = new Set<ReturnType<typeof spawn>>();
 function run(runtime: string, mode: string, root: string, url = "") {
   const child = spawn(runtime, ["consumer.ts", mode, root, url], {
@@ -85,7 +86,17 @@ async function round(a: string, b: string) {
     history: ["succeeded", "leased", "retryWait", "leased", "ready"],
     scheduleStates: ["terminated", "paused", "active"],
   });
-  return { firstOwner: a, restartedOwner: b, first, conflict, second, final };
+  const jobRun = run(b, "jobs", join(root, "jobs"));
+  const jobs = await jobRun.report();
+  assert.equal((await jobRun.closed).code, 0);
+  assert.deepEqual(jobs, {
+    state: "succeeded",
+    result: { square: 49 },
+    replayed: true,
+    stopped: { schedules: 0, runs: 1 },
+    causes: ["square-7 succeeded", "unclaimed terminated"],
+  });
+  return { firstOwner: a, restartedOwner: b, first, conflict, second, final, jobs };
 }
 const engines = { chromium, firefox, webkit };
 type Scenarios = Record<string, () => Promise<unknown>>;
@@ -168,11 +179,13 @@ try {
     join(dir, "package.json"),
     '{"name":"scheduler-consumer","private":true,"type":"module"}',
   );
-  execFileSync("bun", ["add", archive], {
+  // defuss-multicore is the consumer's own choice of pool, as poolHandlers expects.
+  execFileSync("bun", ["add", archive, "defuss-multicore@0.1.0"], {
     cwd: dir,
     stdio: "pipe",
     timeout: 90000,
   });
+  await copyFile("scripts/pool-worker.mjs", join(dir, "pool-worker.mjs"));
   await copyFile("scripts/consumer-types.ts", join(dir, "consumer-types.ts"));
   const tsc = [
     await realpath("node_modules/typescript/bin/tsc"),

@@ -1,6 +1,6 @@
 {
   "name": "defuss-scheduler",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "license": "MIT",
   "author": "Aron Homberg",
@@ -76,6 +76,7 @@
     "@types/bun": "1.3.10",
     "@types/node": "26.6.6",
     "defuss-db": "3.2.0",
+    "defuss-multicore": "0.1.0",
     "oxlint": "^1.0.0",
     "pkgroll": "^2.0.0",
     "playwright-core": "1.65.1",

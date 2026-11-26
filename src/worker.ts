@@ -29,6 +29,26 @@ export type Handler = (
   run: Run,
   context: Context,
 ) => Json | void | Promise<Json | void>;
+/**
+ * The part of a worker-thread pool that `poolHandlers` uses, such as defuss-multicore's `createPool`. A structural
+ * type, so this package depends on no pool library and the application picks one.
+ */
+export interface TaskPool {
+  run(name: string, payload: never, options?: { signal?: AbortSignal }): Promise<unknown>;
+}
+/**
+ * One handler per task name, each running the run's payload as that task of the pool, off the event loop that
+ * renews the lease. The context's signal cancels the task, which with defuss-multicore terminates its thread. Set
+ * the worker's `concurrency` to the pool's size, so no claimed run waits in the pool's queue while its lease runs.
+ */
+export function poolHandlers(pool: TaskPool, names: readonly string[]): Record<string, Handler> {
+  return Object.fromEntries(
+    names.map((name) => [
+      name,
+      async (run: Run, ctx: Context) => (await pool.run(name, run.payload as never, { signal: ctx.signal })) as Json,
+    ]),
+  );
+}
 /** Parse and narrow untrusted payloads before invoking a typed handler. */
 export function defineHandler<P, R extends Json | void>(
   parse: (payload: Json) => P,

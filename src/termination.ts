@@ -1,5 +1,5 @@
 /** VERIFIED: A hard stop marks its schedules first and then ends their unfinished runs a page per transaction. The store tests stop a catch-up backlog that an edit answers with BUSY. */
-import { keys, type Policy, type StoredRun } from "./model.js";
+import { jobRunId, keys, type Policy, type StoredRun } from "./model.js";
 import { runId, terminateRun } from "./leases.js";
 import { halt } from "./schedules.js";
 import type { Ledger } from "./store.js";
@@ -23,20 +23,20 @@ export async function terminate(
   options: { cause: string },
   policy: Policy,
 ): Promise<Terminated> {
-  object(target, ["run", "schedule", "ref", "all"]);
+  object(target, ["run", "job", "schedule", "ref", "all"]);
   if (Object.keys(target).length !== 1)
-    invalid("Name exactly one of run, schedule, ref or all");
+    invalid("Name exactly one of run, job, schedule, ref or all");
   object(options, ["cause"]);
   const { cause } = options;
   if (typeof cause !== "string" || !cause || cause.length > 4096)
     invalid("A termination needs a cause of 1 to 4096 characters");
   const total: Terminated = { schedules: 0, runs: 0 };
 
-  if ("run" in target) {
-    const key = keys.run(ns, runId(target.run));
+  if ("run" in target || "job" in target) {
+    const key = keys.run(ns, "run" in target ? runId(target.run) : jobRunId(id(target.job)));
     total.runs = await ledger.write(async (tx) => {
       const run = await tx.get<StoredRun>(key);
-      if (!run) throw new SchedulerError("NOT_FOUND", "Run absent");
+      if (!run) throw new SchedulerError("NOT_FOUND", "job" in target ? "Job absent" : "Run absent");
       if (run.public.finishedAt !== null) return 0;
       await terminateRun(tx, run, ledger.wallNow(), policy, cause);
       return 1;
@@ -103,5 +103,24 @@ export async function terminate(
     ids = [target.schedule];
   } else ids = await stop(keys.scheduleRefs(ns, id(target.ref)));
   for (const name of ids) await sweep(keys.open(ns, name));
+  // A ref names jobs too. Its index keeps finished runs until retention, so the pages move on by key.
+  if ("ref" in target)
+    for (let after: string | undefined, more = true; more; ) {
+      const page = await ledger.write(async (tx) => {
+        const rows = await tx.rows<string>(keys.runRefs(ns, target.ref), policy.pageSize, after);
+        let ended = 0;
+        for (const { value } of rows) {
+          const run = await tx.get<StoredRun>(value);
+          if (run?.public.jobId != null && run.public.finishedAt === null) {
+            await terminateRun(tx, run, ledger.wallNow(), policy, cause);
+            ended++;
+          }
+        }
+        return { ended, last: rows.at(-1)?.key, full: rows.length === policy.pageSize };
+      });
+      total.runs += page.ended;
+      after = page.last;
+      more = page.full;
+    }
   return total;
 }

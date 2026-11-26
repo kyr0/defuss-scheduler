@@ -243,11 +243,32 @@ async function restart() {
     check(named.items[0].state === "terminated", "terminated schedule");
     const listed = (await q.listRuns({ ref: "ops" })).items;
     check(listed.some((r) => r.id === admitted.id), "runs by ref");
+
+    // A one-off job in the page's store: its result, the follow-up its ending admits, and a deadline.
+    await q.submit({ id: "page-job", handler: "page-job", payload: 3, on: { succeeded: { handler: "notice" } } });
+    let sequence = 0;
+    const job = await until(async () => {
+      sequence++;
+      const c = await q.claim({ workerId: "page", sessionId: "jobs", slot: 0, sequence, requestId: "job-" + sequence, handlers: ["page-job"] });
+      return c.kind === "granted" && c;
+    }, "job grant");
+    check((await q.complete({ lease: job.lease, requestId: "page-job", result: { n: 3 } })).kind === "applied", "job completion");
+    const doneJob = await q.getJob("page-job");
+    check(doneJob?.state === "succeeded" && (doneJob.result as { n: number }).n === 3, "job result");
+    const notice = (await q.listRuns({ limit: 500 })).items.find((r) => r.cause?.job === "page-job");
+    check(notice?.handler === "notice" && notice.cause?.state === "succeeded", "job follow-up");
+    await q.submit({ id: "page-late", handler: "nobody", timeoutMs: 50 });
+    const late = await until(async () => {
+      const r = await q.getJob("page-late");
+      return r?.state === "timedOut" && r;
+    }, "job deadline");
     return {
       state: run.state,
       attempts: run.attempt,
       statuses,
       terminated: ended.state,
+      job: doneJob.state,
+      late: late.state,
     };
   } finally {
     await owner.close();

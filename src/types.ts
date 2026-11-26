@@ -29,6 +29,39 @@ export interface Definition {
   graceMs?: number;
   retry?: Partial<RetryPolicy>;
 }
+/** How a job ends. Each ending can admit one follow-up job, named in the job's `on`. */
+export type EndState = "succeeded" | "dead" | "timedOut" | "terminated";
+/** A job the authority admits when another job ends, in the transaction that ends it. */
+export interface FollowUp {
+  handler: string;
+  payload?: Json;
+  capabilities?: string[];
+  retry?: Partial<RetryPolicy>;
+}
+/**
+ * Work to be done once, without a cron. A worker claims it like a scheduled run. The ID is the caller's, unique in
+ * the scope while the job's record exists, so a repeated submission with another request ID fails instead of
+ * running twice.
+ */
+export interface Job {
+  id: string;
+  ref?: string;
+  handler: string;
+  payload?: Json;
+  capabilities?: string[];
+  /** Jobs run in parallel by default; jobs and schedules sharing a key run one at a time. */
+  concurrencyKey?: string;
+  /** Epoch milliseconds before which no worker gets the job; default now. */
+  availableAt?: number;
+  /** Milliseconds from admission after which the job ends as `timedOut`, wherever it stands. */
+  timeoutMs?: number;
+  retry?: Partial<RetryPolicy>;
+  /**
+   * Follow-up jobs by ending, for example a notification. A follow-up has no `on` of its own. Why not `then`: a
+   * promise check that only tests for the field would misread the record, and oxlint's no-thenable rule refuses it.
+   */
+  on?: Partial<Record<EndState, FollowUp>>;
+}
 export type Patch = Partial<
   Omit<Definition, "id" | "ref" | "concurrencyKey" | "parallel">
 >;
@@ -69,10 +102,13 @@ export interface HistoryOptions {
 }
 export interface Run {
   id: string;
-  scheduleId: string;
-  /** The ref of the schedule at the occurrence's admission. */
+  /** The schedule of an occurrence; null for a job and a follow-up. */
+  scheduleId: string | null;
+  /** The job's own ID; null for an occurrence and a follow-up. */
+  jobId: string | null;
+  /** The ref of the schedule at the occurrence's admission, or the job's. */
   ref?: string;
-  scheduleRevision: string;
+  scheduleRevision: string | null;
   scheduledAt: number;
   handler: string;
   payload: Json;
@@ -81,12 +117,18 @@ export interface Run {
   retry: RetryPolicy;
   attempt: number;
   availableAt: number;
-  state: "ready" | "leased" | "retryWait" | "succeeded" | "dead" | "terminated";
+  state: "ready" | "leased" | "retryWait" | EndState;
   lastError: string | null;
   /** The cause given to the hard stop that terminated the run; null in every other state. */
   terminationCause: string | null;
   finishedAt: number | null;
   result: Json;
+  /** Epoch milliseconds at which a job with `timeoutMs` ends as `timedOut`; null without one. */
+  deadline: number | null;
+  /** A job's follow-ups by ending, normalized; null for every other run. */
+  on: Partial<Record<EndState, Required<Omit<FollowUp, "retry">> & { retry: RetryPolicy }>> | null;
+  /** For a follow-up: the job whose ending admitted it. Null for every other run. */
+  cause: { job: string; run: string; state: EndState } | null;
   /** Epoch milliseconds of the occurrence's admission and of its last status change. */
   createdAt: number;
   updatedAt: number;
@@ -139,9 +181,16 @@ export interface PageOptions {
   /** List only the schedules that carry this ref, or the runs of such schedules in scheduled order. */
   ref?: string;
 }
-/** What a hard stop applies to: one run, one schedule and its runs, every schedule carrying a ref, or the whole scope. */
+/**
+ * What a hard stop applies to: one run, one job, one schedule and its runs, every schedule and job carrying a ref, or
+ * the whole scope. Follow-ups end only by their own run ID, so an app learns of every ending.
+ */
 export type TerminationTarget =
-  { run: string } | { schedule: string } | { ref: string } | { all: true };
+  | { run: string }
+  | { job: string }
+  | { schedule: string }
+  | { ref: string }
+  | { all: true };
 /** How many schedules and unfinished runs a hard stop terminated. */
 export interface Terminated {
   schedules: number;
@@ -153,6 +202,10 @@ export interface Page<T> {
 }
 export interface Queue extends WorkerPort {
   create(def: Definition, options?: { requestId: string }): Promise<Schedule>;
+  /** Admit a job. Repeating the call with the same request ID and arguments returns the job as first admitted. */
+  submit(job: Job, options?: { requestId: string }): Promise<Run>;
+  /** A job's current record, its result included once it succeeded; null for an unknown ID or once retention removed it. */
+  getJob(id: string): Promise<Run | null>;
   get(id: string): Promise<Schedule | null>;
   list(options?: PageOptions): Promise<Page<Schedule>>;
   update(id: string, patch: Patch, change: Change): Promise<Schedule>;

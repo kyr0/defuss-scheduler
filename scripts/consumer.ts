@@ -7,7 +7,9 @@ import { once } from "node:events";
 import { setTimeout as sleep } from "node:timers/promises";
 import { openScheduler, type Grant } from "defuss-scheduler";
 import { connectWorker, createWorkerEndpoint } from "defuss-scheduler/http";
-import { startWorker } from "defuss-scheduler/worker";
+import { poolHandlers, startWorker } from "defuss-scheduler/worker";
+import { createPool } from "defuss-multicore";
+import { Worker as ThreadWorker } from "node:worker_threads";
 
 const [mode, dir, address] = process.argv.slice(2);
 const fixture = JSON.parse(
@@ -97,7 +99,7 @@ if (mode === "host" || mode === "reopen") {
       runs: (await q.listRuns({ ref })).items.map((n) => n.id === r.id),
     };
     const terminated = await q.terminate({ ref }, { cause: "inspected" });
-    assert.equal((await q.get(r.scheduleId))?.terminationCause, "inspected");
+    assert.equal((await q.get(r.scheduleId!))?.terminationCause, "inspected");
     emit({
       named,
       terminated,
@@ -106,11 +108,49 @@ if (mode === "host" || mode === "reopen") {
       result: r.result,
       effectMatchesRun: effect === r.id,
       history: (await q.runHistory(r.id)).map((v) => v.value?.state),
-      scheduleStates: (await q.scheduleHistory(r.scheduleId)).map(
+      scheduleStates: (await q.scheduleHistory(r.scheduleId!)).map(
         (v) => v.value?.state,
       ),
     });
   } finally {
+    await owner.close();
+  }
+} else if (mode === "jobs") {
+  // A one-off job runs as a defuss-multicore task in a worker thread; its endings admit follow-ups a handler sees.
+  const owner = await openScheduler({ directory: dir, leaseMs: 1500, tickMs: 10, pollMs: 10 });
+  const q = owner.scope(fixture.scope);
+  // VERIFIED by probe: under Bun 1.4.5 the pool never answers through node:worker_threads, but does through Bun's
+  // global Worker; Node.js has no global Worker.
+  const url = new URL("./pool-worker.mjs", import.meta.url);
+  const pool = createPool({
+    worker: () => (typeof Worker === "function" ? new Worker(url, { type: "module" }) : new ThreadWorker(url)),
+    maxWorkers: 2,
+  });
+  const causes: string[] = [];
+  const worker = startWorker(q, {
+    workerId: "jobs",
+    concurrency: 2,
+    handlers: {
+      ...poolHandlers(pool, ["square"]),
+      notify: (run) => {
+        causes.push(run.cause!.job + " " + run.cause!.state);
+        return null;
+      },
+    },
+  });
+  try {
+    const job = { id: "square-7", handler: "square", payload: { n: 7 }, timeoutMs: 10000, on: { succeeded: { handler: "notify" } } };
+    const admitted = await q.submit(job, { requestId: "submit" });
+    const replayed = (await q.submit(job, { requestId: "submit" })).id === admitted.id;
+    await q.submit({ id: "unclaimed", handler: "nobody", on: { terminated: { handler: "notify" } } });
+    const stopped = await q.terminate({ job: "unclaimed" }, { cause: "e2e" });
+    const end = Date.now() + 8000;
+    while (causes.length < 2 && Date.now() < end) await sleep(15);
+    const done = await q.getJob("square-7");
+    emit({ state: done?.state, result: done?.result, replayed, stopped, causes: causes.sort() });
+  } finally {
+    await worker.stop();
+    await pool.close();
     await owner.close();
   }
 } else {

@@ -141,6 +141,7 @@ async function materialize(
       public: {
         id: rid,
         scheduleId: s.id,
+        jobId: null,
         ...(s.ref !== undefined && { ref: s.ref }),
         scheduleRevision: s.revision,
         scheduledAt: due,
@@ -156,6 +157,9 @@ async function materialize(
         terminationCause: null,
         finishedAt: null,
         result: null,
+        deadline: null,
+        on: null,
+        cause: null,
       },
     };
     tx.put(key, run);

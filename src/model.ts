@@ -13,6 +13,7 @@ import {
 } from "./validation.js";
 import {
   type Definition,
+  type RetryPolicy,
   type Schedule,
   type ScheduleRecord,
   type Scope,
@@ -46,9 +47,14 @@ export interface StoredRun {
   createdAt?: number;
   updatedAt?: number;
 }
+/** Runs a 0.2.0 store wrote lack the job fields, and read as the occurrences they are. */
 export function exposed(run: StoredRun): Run {
   return {
     ...run.public,
+    jobId: run.public.jobId ?? null,
+    deadline: run.public.deadline ?? null,
+    on: run.public.on ?? null,
+    cause: run.public.cause ?? null,
     createdAt: run.createdAt!,
     updatedAt: run.updatedAt!,
   };
@@ -118,12 +124,28 @@ export const keys = {
   /** Unfinished runs by schedule, so a hard stop finds them without scanning the scope's runs. */
   open: (s: string, name?: string) =>
     "u/" + s + "/" + (name === undefined ? "" : encode(name) + "/"),
+  /**
+   * Unfinished jobs, inside the scope's open prefix so a stop of the whole scope reaches them. An encoded array never
+   * equals an encoded schedule name, which is a string.
+   */
+  openJobs: (s: string) => "u/" + s + "/" + encode(["job"]) + "/",
+  /** Unfinished follow-ups, outside that prefix: a hard stop never cancels the notice of an ending. */
+  openFollowUps: (s: string) => "uf/" + s + "/",
+  /** Unfinished jobs by deadline, so maintenance ends them when it passes. */
+  deadline: (at: number, s: string, rid: string) =>
+    "x/" + timeKey(at) + "/" + s + "/" + rid,
   /** Schedules and runs by ref. Each entry's value is the key of the record it points to. */
   scheduleRefs: (s: string, ref: string) => "is/" + s + "/" + encode(ref) + "/",
   runRefs: (s: string, ref: string) => "ir/" + s + "/" + encode(ref) + "/",
 };
+/** A job's run ID derives from its ID, so `getJob` finds it without an index. */
+export const jobRunId = (job: string) => encode(["job", job]);
 export const openKey = (run: StoredRun) =>
-  keys.open(run.scope, run.public.scheduleId) + run.public.id;
+  (run.public.scheduleId != null
+    ? keys.open(run.scope, run.public.scheduleId)
+    : run.public.jobId != null
+      ? keys.openJobs(run.scope)
+      : keys.openFollowUps(run.scope)) + run.public.id;
 /** Runs of one ref sort by their scheduled time, across the schedules that carried it. */
 export const runRefKey = (run: StoredRun) =>
   keys.runRefs(run.scope, run.public.ref!) +
@@ -154,14 +176,6 @@ export function schedule(input: Definition, now: number): Draft {
   const expr = calendar(input.cron, timezone);
   const next = expr.nextRun(new Date(now));
   if (!next) invalid("Expression has no future match");
-  if (input.retry !== undefined)
-    object(input.retry, ["maxAttempts", "baseMs", "maxMs"]);
-  const baseMs = integer(input.retry?.baseMs ?? 500, 0, 86_400_000);
-  const maxMs = integer(
-    input.retry?.maxMs ?? Math.max(baseMs, 30_000),
-    baseMs,
-    86_400_000,
-  );
   const misfire = input.misfire ?? "latest";
   if (!["latest", "catchUp", "skip"].includes(misfire))
     invalid("Unknown misfire policy");
@@ -179,11 +193,7 @@ export function schedule(input: Definition, now: number): Draft {
     capabilities: names(input.capabilities ?? []),
     misfire,
     graceMs: integer(input.graceMs ?? 60_000, 0, Number.MAX_SAFE_INTEGER),
-    retry: {
-      baseMs,
-      maxMs,
-      maxAttempts: integer(input.retry?.maxAttempts ?? 3, 1, 10_000),
-    },
+    retry: retryPolicy(input.retry),
     parallel: input.parallel ?? false,
     ...(input.concurrencyKey !== undefined && {
       concurrencyKey: id(input.concurrencyKey),
@@ -194,6 +204,16 @@ export function schedule(input: Definition, now: number): Draft {
     nextDue: next.getTime(),
     lastProcessed: now,
     lastSkipped: null,
+  };
+}
+/** 3 attempts, a 500 ms base and a 30 s cap unless the caller sets them; schedules, jobs and follow-ups share it. */
+export function retryPolicy(retry: Partial<RetryPolicy> | undefined): RetryPolicy {
+  if (retry !== undefined) object(retry, ["maxAttempts", "baseMs", "maxMs"]);
+  const baseMs = integer(retry?.baseMs ?? 500, 0, 86_400_000);
+  return {
+    baseMs,
+    maxMs: integer(retry?.maxMs ?? Math.max(baseMs, 30_000), baseMs, 86_400_000),
+    maxAttempts: integer(retry?.maxAttempts ?? 3, 1, 10_000),
   };
 }
 export function definition(s: Schedule): Definition {

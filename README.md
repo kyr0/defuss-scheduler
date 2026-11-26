@@ -1,6 +1,6 @@
 # defuss-scheduler
 
-defuss-scheduler turns cron schedules into durable work, with one API in Node.js, Bun and the browser. One authority owns a store and records each due occurrence as a run. Workers pull runs from it. A worker is a set of handler functions in the same process or page, or a program on another machine. The authority grants one current lease per concurrency key. A worker that loses its lease cannot renew, fail or complete the next worker's attempt.
+defuss-scheduler turns cron schedules into durable work, with one API in Node.js, Bun and the browser. One authority owns a store and records each due occurrence as a run. Workers pull runs from it. A worker is a set of handler functions in the same process or page, or a program on another machine. The authority grants one current lease per concurrency key. A worker that loses its lease cannot renew, fail or complete the next worker's attempt. Besides schedules, the authority takes one-off jobs, each with an optional deadline and a follow-up job for each way it can end.
 
 | Runtime | Store | Authority |
 | --- | --- | --- |
@@ -58,7 +58,9 @@ Every attempt of an occurrence has the same run ID. Pass it to the destination a
 | Authority | The one process, window or worker that has a store open. It turns due cron occurrences into runs and decides who may execute them. |
 | Scope | An app, tenant and bucket. Schedule IDs, concurrency keys and worker groups are isolated per scope. `scheduler.scope(...)` returns the queue of one scope. |
 | Schedule | A cron expression, a handler name and a JSON payload. It can be updated, paused, resumed, removed and terminated. |
-| Run | One occurrence of a schedule. Every attempt of it carries the same run ID. |
+| Run | One occurrence of a schedule, or one job. Every attempt of it carries the same run ID. |
+| Job | Work to be done once, without a cron, under an ID of the caller's. A worker claims it like an occurrence. |
+| Follow-up | A job the authority admits when a job ends, in the same transaction, for example to notify the application. |
 | Worker | A loop that claims runs for the handler names it implements and reports the outcome. |
 | Lease and fence | A claim grants a lease that the worker renews while it runs. Each grant in a concurrency group carries a greater fence, so a destination can reject a writer whose lease is gone. |
 
@@ -148,9 +150,42 @@ const { items: runs } = await jobs.listRuns({ ref: "report", limit: 20 });
 
 The default latest policy coalesces ticks missed by the authority. An already materialized occurrence waits in the queue while its group is busy. Choose catchUp for every missed occurrence or skip with graceMs for a bounded time window.
 
+## Jobs
+
+```js
+const job = await jobs.submit({
+  id: "render-42",
+  handler: "render",
+  payload: { page: 42 },
+  timeoutMs: 600_000,
+  on: {
+    succeeded: { handler: "notify", payload: { page: 42 } },
+    dead: { handler: "alert" },
+    timedOut: { handler: "alert" },
+  },
+});
+const record = await jobs.getJob("render-42"); // state, attempt, lastError and, once it succeeded, result
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| id | required | 1 to 128 UTF-8 bytes, unique in the scope while the job's record exists. |
+| handler, payload, capabilities, retry | as for schedules | The same rules as a schedule's fields. |
+| ref | none | A name of your own. `listRuns({ ref })` and `terminate({ ref })` reach the jobs that carry it. |
+| availableAt | now | Epoch milliseconds before which no worker gets the job. |
+| timeoutMs | none | A deadline counted from submission, 1 ms to a year. Past it, the job ends as `timedOut`, wherever it stands. |
+| concurrencyKey | none | Jobs run in parallel unless they share a key, with each other or with schedules. |
+| on | none | A follow-up for any of the endings `succeeded`, `dead`, `timedOut` and `terminated`: a `handler`, and optionally a `payload`, `capabilities` and `retry`. |
+
+`submit` returns the job's run, with `jobId` set and `scheduleId` null. A repeated call with the same `requestId` and arguments returns the job as first admitted; another ID for the same job rejects with `ALREADY_EXISTS`. A scope that holds `maxPending` unfinished runs rejects a submission with `BUSY`. Retention removes a finished job one day after it ends by default, and then its ID is free again. Why not reserve job IDs forever, as schedule IDs are: a queue of many jobs would keep one record per job ever submitted.
+
+A deadline that passes ends a waiting job without a claim. A leased job ends too: the holder's next renewal answers `stale`, so the handler's signal aborts, and a completion after the deadline is ignored. VERIFIED by tests/jobs.test.ts.
+
+A follow-up enters the queue in the transaction that ends its job, so a crash leaves both or neither. It is a run with `cause: { job, run, state }`, which names the job and how it ended. A follow-up carries the job's ref and has no `on` of its own, so follow-ups cannot loop. Why the authority admits them rather than the application watching for endings: lease expiry, retries running out and deadlines happen inside the authority's maintenance, where no call of the application passes. A follow-up counts toward `maxPending`, but it is admitted even when the scope is full, so an ending never fails. A hard stop by job, ref or scope never ends a follow-up, so the application learns of every ending; `terminate({ run })` ends one.
+
 ## Runs and their status over time
 
-A run moves through `ready`, `leased`, `retryWait` and ends as `succeeded`, `dead` or `terminated`. `getRun` and `listRuns` return the current state with the attempt count, the last error, the result and two timestamps. `createdAt` is the instant the occurrence was admitted. `updatedAt` is its last status change. Schedules carry the same pair for their definition and state. Terminal runs are removed with their history after `retentionMs`, one day by default.
+A run moves through `ready`, `leased`, `retryWait` and ends as `succeeded`, `dead`, `terminated`, or for a job past its deadline `timedOut`. `getRun` and `listRuns` return the current state with the attempt count, the last error, the result and two timestamps. `createdAt` is the instant the occurrence was admitted. `updatedAt` is its last status change. Schedules carry the same pair for their definition and state. Terminal runs are removed with their history after `retentionMs`, one day by default.
 
 The history answers what happened earlier. `runHistory` lists every status a run went through, newest first, and is empty once retention removed the run. `scheduleHistory` lists every definition and state of a schedule.
 
@@ -177,10 +212,11 @@ const { schedules, runs } = await jobs.terminate({ all: true }, { cause: "mainte
 
 | Target | Terminates |
 | --- | --- |
-| `{ run: id }` | One unfinished run. |
+| `{ run: id }` | One unfinished run, a follow-up included. |
+| `{ job: id }` | One unfinished job. |
 | `{ schedule: id }` | The schedule and its unfinished runs. |
-| `{ ref }` | Every schedule that carries the ref, and their unfinished runs. |
-| `{ all: true }` | Every schedule and unfinished run of the scope. |
+| `{ ref }` | Every schedule and job that carries the ref, and the schedules' unfinished runs. |
+| `{ all: true }` | Every schedule, unfinished run and job of the scope. Follow-ups stay. |
 
 `pause`, `remove` and `update` wait until the occurrences that were already due have been admitted, and they reject with `BUSY` until then. `terminate` does not wait. An active or paused schedule becomes `terminated`: it admits nothing more and its ID stays reserved. Every unfinished run ends as `terminated`, whether it was ready, waiting for a retry or leased. A removed schedule keeps its state, and its unfinished runs end all the same.
 
@@ -216,6 +252,8 @@ process.once("SIGTERM", () => worker.stop());
 A thrown error fails the attempt, and the run is retried within its retry budget. Throwing `PermanentFailure` ends the run as `dead` at once. `defineHandler` validates the payload first, and a rejected payload counts as a permanent failure. The worker renews its lease while a handler runs. When the lease is lost or the run is terminated, the context's signal aborts. A slot without work waits `pollMs`, plus up to a quarter of it as jitter, before it asks again. An empty answer writes nothing to the store. `stop` ends claiming and waits up to `drainMs`, 15 seconds by default, for handlers in flight.
 
 A worker that serves every scope, such as a daemon that runs one handler for all of its tenants, asks the authority `ready({ handlers })` for the scopes that hold a run of those handlers that is available now, and claims only there. An idle scope then costs no claims. `ready` writes nothing to the store.
+
+`poolHandlers(pool, names)` runs each named handler as a task of a worker-thread pool, such as defuss-multicore's `createPool`, off the event loop that renews the lease. The handler's signal cancels the task, which with defuss-multicore terminates its thread. The pool is a structural type, so this package does not depend on any pool library. [Worker threads](docs/WORKERS.md#worker-threads)
 
 Workers on other machines reach the authority through one HTTP route that the application mounts behind its own authentication. [Remote worker and backplane integration](docs/WORKERS.md)
 

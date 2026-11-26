@@ -13,6 +13,7 @@ import {
   type StoredRun,
 } from "./model.js";
 import type { Ledger, Records } from "./store.js";
+import { admitFollowUp } from "./jobs.js";
 import {
   type Lease,
   type Report,
@@ -120,6 +121,8 @@ async function release(tx: Records, run: StoredRun) {
 /**
  * What every terminal status shares: the run leaves the unfinished set and is collected, with its ref entry,
  * after retention. No later grant can raise the fence of a parallel run's own group, so that record goes now.
+ * A job's deadline entry goes too, and the follow-up its ending names enters in this same transaction, so a crash
+ * cannot keep one without the other.
  */
 async function retire(
   tx: Records,
@@ -135,7 +138,9 @@ async function retire(
   );
   tx.del(openKey(run));
   if (run.group === keys.ownGroup(run.scope, run.public.id)) tx.del(run.group);
+  if (run.public.deadline != null) tx.del(keys.deadline(run.public.deadline, run.scope, run.public.id));
   await count(tx, run.scope, -1);
+  await admitFollowUp(tx, run, wall);
 }
 /**
  * A slot record is the receipt of its claims and is kept as long as other receipts: one retention period
@@ -174,6 +179,18 @@ export async function terminateRun(
   await retire(tx, run, wall, policy);
   tx.put(keys.run(run.scope, item.id), run);
 }
+/** A job past its deadline ends as `timedOut`, wherever it stands. A lease it held ends here, so its holder's next
+ * report is stale and the handler's signal aborts. */
+export async function timeOut(tx: Records, run: StoredRun, wall: number, policy: Policy) {
+  const item = run.public;
+  if (run.lease) await release(tx, run);
+  else dequeue(tx, run);
+  item.state = "timedOut";
+  item.finishedAt = wall;
+  await retire(tx, run, wall, policy);
+  tx.put(keys.run(run.scope, item.id), run);
+}
+const overdue = (run: StoredRun, wall: number) => run.public.deadline != null && run.public.deadline <= wall;
 async function settle(
   tx: Records,
   run: StoredRun,
@@ -320,10 +337,16 @@ export async function claim(
       )
         throw new SchedulerError("FORMAT", "Ready index disagrees with run");
       const item = run.public;
+      // A job whose deadline passed before maintenance came to it ends here instead of starting.
+      if (overdue(run, ledger.wallNow())) {
+        await timeOut(tx, run, ledger.wallNow(), policy);
+        continue;
+      }
       // A hard stop of the schedule reaches every run its sweep has not come to yet.
-      const owner = await tx.get<ScheduleRecord>(
-        keys.schedule(ns, item.scheduleId),
-      );
+      const owner =
+        item.scheduleId == null
+          ? undefined
+          : await tx.get<ScheduleRecord>(keys.schedule(ns, item.scheduleId));
       if (owner?.state === "terminated") {
         await terminateRun(
           tx,
@@ -422,6 +445,11 @@ export async function report(
       return { kind: "stale" };
     if (group.expiresAt! <= ledger.leaseNow()) {
       await expire(tx, ns, l.runId, ledger, policy);
+      return { kind: "stale" };
+    }
+    // Past the deadline even a completion is late: the job has timed out.
+    if (overdue(run, ledger.wallNow())) {
+      await timeOut(tx, run, ledger.wallNow(), policy);
       return { kind: "stale" };
     }
     if (ack) return { kind: "alreadyApplied", expiresAt: group.expiresAt };

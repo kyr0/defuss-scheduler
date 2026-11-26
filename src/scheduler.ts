@@ -2,6 +2,7 @@
 import { openLedger, type Mounter } from "./store.js";
 import {
   exposed,
+  jobRunId,
   handlerPrefix,
   scopeKey,
   keys,
@@ -13,7 +14,8 @@ import {
   type Policy,
 } from "./model.js";
 import { advance, create, modify } from "./schedules.js";
-import { claim, collectSlot, expire, report, runId } from "./leases.js";
+import { claim, collectSlot, expire, report, runId, timeOut } from "./leases.js";
+import { submit } from "./jobs.js";
 import { terminate } from "./termination.js";
 import {
   type HistoryOptions,
@@ -142,6 +144,18 @@ export async function start(
       );
       for (const { value: p } of expired)
         await expire(tx, p.scope, p.id, ledger, policy);
+      // Ending a job removes its deadline entry, so every page of overdue jobs makes progress.
+      const overdue = await tx.rows<Pointer>(
+        "x/",
+        policy.pageSize,
+        undefined,
+        "x/" + timeKey(now) + "/\uffff",
+      );
+      for (const { key, value: p } of overdue) {
+        const run = await tx.get<StoredRun>(keys.run(p.scope, p.id));
+        if (run && run.public.finishedAt === null) await timeOut(tx, run, now, policy);
+        else tx.del(key);
+      }
       const gc = await tx.rows<string[]>(
         "z/",
         policy.pageSize,
@@ -163,7 +177,11 @@ export async function start(
         dueCursor,
         "d/" + timeKey(now) + "/\uffff",
       );
-      return { due, ended, full: gc.length === policy.pageSize };
+      return {
+        due,
+        ended,
+        full: gc.length === policy.pageSize || overdue.length === policy.pageSize,
+      };
     });
     if (ended.length) {
       await ledger.erase(ended.map((row) => row.value[0]));
@@ -255,6 +273,15 @@ export async function start(
       return {
         create: async (def, opts = { requestId: crypto.randomUUID() }) =>
           create(ledger, ns, capture(def), capture(opts), policy),
+        submit: async (job, opts = { requestId: crypto.randomUUID() }) =>
+          submit(ledger, ns, capture(job), capture(opts), policy),
+        getJob: async (name) => {
+          const k = keys.run(ns, jobRunId(id(capture(name))));
+          return ledger.write(async (tx) => {
+            const run = await tx.get<StoredRun>(k);
+            return run ? exposed(run) : null;
+          });
+        },
         get: async (name) => {
           const k = keys.schedule(ns, id(capture(name)));
           return ledger.write(
